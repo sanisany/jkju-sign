@@ -12,7 +12,7 @@
     beautifulsoup4
 
 #### 使用说明
-1. 修改YueXiSign.py的最后的 `if__name__=="__main__":` 函数:
+1. 修改main.py的最后的 `if__name__=="__main__":` 函数:
 替换其中的 `用户名/邮箱` 和 `密码`
 ```python
 if __name__ == "__main__":
