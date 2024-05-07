@@ -40,7 +40,6 @@ class AutoSign:
         self._session = requests.session()
         self._username = username
         self._password = hashlib.md5(password.encode()).hexdigest()
-        print(f"md5: {self._password}")
         self._login_form_data["username"] = username
         self._login_form_data["password"] = password
         if is_email:
