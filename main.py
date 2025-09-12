@@ -1,134 +1,160 @@
+import argparse
+import hashlib
 import requests
 from bs4 import BeautifulSoup
-import hashlib
-import argparse
+
 
 class AutoSign:
-    # 登录界面 (提取loginHash)
-    _login_page = "https://www.jkju.cc/member.php"  # GET
-    # 登录地址
-    _login_url = "https://www.jkju.cc/member.php"  # POST
-    # 签到地址
-    _sign_url = "https://www.jkju.cc/plugin.php"  # GET
-    # 签到页面
-    _sign_page_url = "https://www.jkju.cc/plugin.php?id=zqlj_sign" # GET
+    LOGIN_PAGE = "https://www.jkju.cc/member.php"
+    LOGIN_URL = "https://www.jkju.cc/member.php"
+    SIGN_URL = "https://www.jkju.cc/plugin.php"
+    SIGN_PAGE_URL = "https://www.jkju.cc/plugin.php?id=zqlj_sign"
 
-    _login_form_data = {"referer": "https://www.jkju.cc/", "questionid": 0, "answer": "", "cookietime": "2592000"}
-
-    _login_params = {"mod": "logging","action": "login","loginsubmit": "yes","inajax": 1}
-
-    _login_header = {
-        "user=agent": "user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
-                      "Chrome/113.0.0.0 Safari/537.36 Edg/113.0.1774.35",
-        "origin": "https://www.jkju.cc",
-        "referer": "https://www.jkju.cc/member.php?mod=logging&action=login",
+    LOGIN_FORM_DATA = {
+        "referer": "https://www.jkju.cc/",
+        "questionid": 0,
+        "answer": "",
+        "cookietime": "2592000",
     }
 
-    _sign_header = {
-        "user=agent": "user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
-                      "Chrome/113.0.0.0 Safari/537.36 Edg/113.0.1774.35",
-        "refer": "https://www.jkju.cc/"
+    LOGIN_PARAMS = {
+        "mod": "logging",
+        "action": "login",
+        "loginsubmit": "yes",
+        "inajax": 1,
     }
 
-    def __init__(self, username, password, is_email=False):
-        self._session = requests.session()
-        self._username = username
-        self._password = hashlib.md5(password.encode()).hexdigest()
-        self._login_form_data["username"] = username
-        self._login_form_data["password"] = password
-        self._sign_page_html = None
-        if is_email:
-            self._login_form_data["loginfield"] = "email"
-        else:
-            self._login_form_data["loginfield"] = "username"
+    LOGIN_HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0",
+        "Origin": "https://www.jkju.cc",
+        "Referer": "https://www.jkju.cc/member.php?mod=logging&action=login",
+    }
+
+    SIGN_HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0",
+        "Referer": "https://www.jkju.cc/",
+    }
+
+    def __init__(self, username: str, password: str, is_email: bool = False) -> None:
+        self.session = requests.Session()
+        self.username = username
+        self.password_md5 = hashlib.md5(password.encode()).hexdigest()
+
+        self.login_form_data = self.LOGIN_FORM_DATA.copy()
+        self.login_form_data["username"] = username
+        self.login_form_data["password"] = password
+        self.login_form_data["loginfield"] = "email" if is_email else "username"
+
+        self.sign_page_html: str | None = None
         self.message = f"签到任务: 镜客居\n登录账号: {username}\n"
 
-    def _get_login_hash(self):
-        html = self._session.get(url=self._login_page, params={"mod": "logging", "action": "login"}).text
-        soup = BeautifulSoup(html, 'html.parser')
+    def _get_login_hash(self) -> tuple[str, str]:
+        # 第一次 (403)，但设置了临时 cookie
+        self.session.get(
+            self.LOGIN_PAGE, params={"mod": "logging", "action": "login"}
+        )
+        # 第二次 (200)，必须带上第一次的 cookie
+        resp2 = self.session.get(
+            self.LOGIN_PAGE, params={"mod": "logging", "action": "login"}
+        )
+        soup = BeautifulSoup(resp2.text, "html.parser")
+
         form_tag = soup.find("form", {"name": "login"})
-        login_form_hash = form_tag.find("input", {"name": "formhash", "type": "hidden"}).get("value")
-        login_hash_value = form_tag.get("action").split("&")[-1].split("=")[-1]
-        return login_form_hash, login_hash_value
+        formhash = form_tag.find("input", {"name": "formhash", "type": "hidden"}).get("value")
+        loginhash = form_tag.get("action").split("&")[-1].split("=")[-1]
 
-    def login(self):
-        hashes = self._get_login_hash()
-        self._login_form_data["formhash"] = hashes[0]
-        self._login_params["loginhash"] = hashes[1]
-        self._login_header["cookie"] = self._solve_cookie()
-        login_response = self._session.post(self._login_url, params=self._login_params, data=self._login_form_data,
-                                            headers=self._login_header).text
-        if "请输入验证码继续登录" in login_response:
+        return formhash, loginhash
+
+    def login(self) -> int:
+        """执行两次请求完成登录。"""
+        formhash, loginhash = self._get_login_hash()
+        self.login_form_data["formhash"] = formhash
+        self.LOGIN_PARAMS["loginhash"] = loginhash
+
+        self.session.post(
+            self.LOGIN_URL,
+            params=self.LOGIN_PARAMS,
+            data=self.login_form_data,
+            headers=self.LOGIN_HEADERS,
+        )
+
+        # 登录前清理掉临时 cookie
+        self.session.cookies.clear_expired_cookies()
+
+        resp = self.session.post(
+            self.LOGIN_URL,
+            params=self.LOGIN_PARAMS,
+            data=self.login_form_data,
+            headers=self.LOGIN_HEADERS,
+        )
+
+        text = resp.text
+        if "请输入验证码继续登录" in text:
             return 0
-        if "欢迎您回来" in login_response:
+        if "欢迎您回来" in text:
             return 1
         return -1
 
-    def _get_sign_hash(self):
-        soup = BeautifulSoup(self._sign_page_html, 'html.parser')
+    def _init_sign_page(self) -> None:
+        self.sign_page_html = self.session.get(self.SIGN_PAGE_URL).text
+
+    def _get_sign_hash(self) -> str:
+        soup = BeautifulSoup(self.sign_page_html, "html.parser")
         form_tag = soup.find("form", {"id": "scbar_form"})
-        sign_form_hash = form_tag.find("input", {"name": "formhash", "type": "hidden"}).get("value")
-        return sign_form_hash
+        return form_tag.find("input", {"name": "formhash", "type": "hidden"}).get("value")
 
-    def sign(self):
+    def _get_sign_trend(self) -> str:
+        soup = BeautifulSoup(self.sign_page_html, "lxml")
+        trend_lis = soup.select('#wp > div.ct2.cl > div.sd > div:nth-of-type(3) > div.bm_c > ul > li')
+        return "\n".join(li.text for li in trend_lis)
+
+    def _already_signed(self) -> bool:
+        soup = BeautifulSoup(self.sign_page_html, "html.parser")
+        sign_status_text = soup.find("div", class_="bm signbtn cl").find("a").text
+        return "今日已打卡" in sign_status_text
+
+    def sign(self) -> int:
+        """执行签到操作。"""
         sign_hash = self._get_sign_hash()
-        self._sign_header["cookie"] = self._solve_cookie()
-        response = self._session.get(url=self._sign_url, headers=self._sign_header,params={"id": "zqlj_sign", "sign": sign_hash}).text
-        if response.find("恭喜您，打卡成功！") >= 0:
+        resp = self.session.get(
+            self.SIGN_URL,
+            headers=self.SIGN_HEADERS,
+            params={"id": "zqlj_sign", "sign": sign_hash},
+        ).text
+
+        if "恭喜您，打卡成功！" in resp:
             return 1
-        if response.find("您今天已经打过卡了，请勿重复操作！") >= 0:
+        if "您今天已经打过卡了，请勿重复操作！" in resp:
             return 0
         return -1
 
-    def _init_sign_page(self):
-        self._sign_page_html = self._session.get(url=self._sign_page_url).text
-
-    def _get_sign_trend(self):
-        soup = BeautifulSoup(self._sign_page_html, 'lxml')
-        trend_lis = soup.select('#wp > div.ct2.cl > div.sd > div:nth-of-type(3) > div.bm_c > ul > li')
-        trend_message = ""
-        for li in trend_lis:
-            trend_message += f'{li.text}\n'
-        return trend_message
-
-    def _check_sign(self):
-        bs = BeautifulSoup(self._sign_page_html, 'html.parser')
-        sign_status_text = bs.find("div", attrs={"class": "bm signbtn cl"}).find("a").text
-        if sign_status_text.find("今日已打卡") >= 0:
-            return True
-        return False
-
-    def _solve_cookie(self):
-        cookies = self._session.cookies.get_dict()
-        cookies_str_list = [f"{k}={v}" for k, v in cookies.items()]
-        cookies_str = "; ".join(cookies_str_list)
-        return cookies_str
-
-    def start(self):
+    def start(self) -> None:
         login_status = self.login()
 
         if login_status == 0:
             self.message += "登录状态: 频繁登录，需要验证码\n"
-        if login_status == -1:
+        elif login_status == -1:
             self.message += "登录状态: 登录失败\n"
             print(self.message)
             return
 
         self._init_sign_page()
-        has_sign = self._check_sign()
-        if has_sign:
-            self.message += f"执行结果: 今日已签到\n"
+        if self._already_signed():
+            self.message += "执行结果: 今日已签到\n"
             self.message += self._get_sign_trend()
         else:
             sign_status = self.sign()
             if sign_status == -1:
-                self.message += f'执行结果: 签到失败\n'
+                self.message += "执行结果: 签到失败\n"
             else:
-                self.message += f'执行结果: {"签到成功" if sign_status == 1 else "今日已签到"}\n'
+                self.message += f"执行结果: {'签到成功' if sign_status == 1 else '今日已签到'}\n"
                 self._init_sign_page()
                 self.message += self._get_sign_trend()
         print(self.message)
-
 
 if __name__ == "__main__":
     args_parser = argparse.ArgumentParser()
