@@ -98,7 +98,11 @@ class AutoSign:
         return -1
 
     def _init_sign_page(self) -> None:
-        self.sign_page_html = self.session.get(self.SIGN_PAGE_URL).text
+        resp = self.session.get(self.SIGN_PAGE_URL)
+        if resp.status_code == 403:
+            self.session.cookies.clear_expired_cookies()
+            resp = self.session.get(self.SIGN_PAGE_URL)
+        self.sign_page_html = resp.text
 
     def _get_sign_hash(self) -> str:
         soup = BeautifulSoup(self.sign_page_html, "html.parser")
