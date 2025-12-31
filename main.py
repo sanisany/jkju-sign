@@ -5,16 +5,16 @@ from bs4 import BeautifulSoup
 
 
 class AutoSign:
+    BASE_URL = "https://www.jkju.cc/"
     LOGIN_PAGE = "https://www.jkju.cc/member.php"
     LOGIN_URL = "https://www.jkju.cc/member.php"
     SIGN_URL = "https://www.jkju.cc/plugin.php"
     SIGN_PAGE_URL = "https://www.jkju.cc/plugin.php?id=zqlj_sign"
 
     LOGIN_FORM_DATA = {
-        "referer": "https://www.jkju.cc/",
+        "referer": "https://www.jkju.cc/index.php",
         "questionid": 0,
         "answer": "",
-        "cookietime": "2592000",
     }
 
     LOGIN_PARAMS = {
@@ -36,7 +36,7 @@ class AutoSign:
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                       "AppleWebKit/537.36 (KHTML, like Gecko) "
                       "Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0",
-        "Referer": "https://www.jkju.cc/",
+        "Referer": "https://www.jkju.cc/plugin.php?id=zqlj_sign",
     }
 
     def __init__(self, username: str, password: str, is_email: bool = False) -> None:
@@ -49,6 +49,7 @@ class AutoSign:
         self.login_form_data["password"] = password
         self.login_form_data["loginfield"] = "email" if is_email else "username"
 
+        self.sign_url : str | None = None
         self.sign_page_html: str | None = None
         self.message = f"签到任务: 镜客居\n登录账号: {username}\n"
 
@@ -69,7 +70,6 @@ class AutoSign:
         return formhash, loginhash
 
     def login(self) -> int:
-        """执行两次请求完成登录。"""
         formhash, loginhash = self._get_login_hash()
         self.login_form_data["formhash"] = formhash
         self.LOGIN_PARAMS["loginhash"] = loginhash
@@ -104,11 +104,6 @@ class AutoSign:
             resp = self.session.get(self.SIGN_PAGE_URL)
         self.sign_page_html = resp.text
 
-    def _get_sign_hash(self) -> str:
-        soup = BeautifulSoup(self.sign_page_html, "html.parser")
-        form_tag = soup.find("form", {"id": "scbar_form"})
-        return form_tag.find("input", {"name": "formhash", "type": "hidden"}).get("value")
-
     def _get_sign_trend(self) -> str:
         soup = BeautifulSoup(self.sign_page_html, "lxml")
         trend_lis = soup.select('#wp > div.ct2.cl > div.sd > div:nth-of-type(3) > div.bm_c > ul > li')
@@ -116,21 +111,22 @@ class AutoSign:
 
     def _already_signed(self) -> bool:
         soup = BeautifulSoup(self.sign_page_html, "html.parser")
-        sign_status_text = soup.find("div", class_="bm signbtn cl").find("a").text
+        sign_btn = soup.find("div", class_="bm signbtn cl").find("a")
+        self.sign_url = self.BASE_URL + sign_btn.get("href")
+        sign_status_text = sign_btn.text
         return "今日已打卡" in sign_status_text
 
     def sign(self) -> int:
-        """执行签到操作。"""
-        sign_hash = self._get_sign_hash()
-        resp = self.session.get(
-            self.SIGN_URL,
-            headers=self.SIGN_HEADERS,
-            params={"id": "zqlj_sign", "sign": sign_hash},
-        ).text
+        resp = self.session.get(self.sign_url, headers=self.SIGN_HEADERS,)
+        if resp.status_code == 403:
+            self.session.cookies.clear_expired_cookies()
+            resp = self.session.get(self.sign_url, headers=self.SIGN_HEADERS,)
 
-        if "恭喜您，打卡成功！" in resp:
+        resp_text = resp.text
+
+        if "恭喜您，打卡成功！" in resp_text:
             return 1
-        if "您今天已经打过卡了，请勿重复操作！" in resp:
+        if "您今天已经打过卡了，请勿重复操作！" in resp_text:
             return 0
         return -1
 
