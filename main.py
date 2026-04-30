@@ -1,166 +1,173 @@
 import argparse
 import hashlib
+from time import sleep
+
 import requests
 from bs4 import BeautifulSoup
 
 
 class AutoSign:
     BASE_URL = "https://www.jkju.cc/"
-    LOGIN_PAGE = "https://www.jkju.cc/member.php"
-    LOGIN_URL = "https://www.jkju.cc/member.php"
-    SIGN_URL = "https://www.jkju.cc/plugin.php"
-    SIGN_PAGE_URL = "https://www.jkju.cc/plugin.php?id=zqlj_sign"
+    LOGIN_PAGE = BASE_URL + "member.php"
+    LOGIN_URL = BASE_URL + "member.php"
+    SIGN_PAGE_URL = BASE_URL + "plugin.php?id=zqlj_sign"
 
-    LOGIN_FORM_DATA = {
-        "referer": "https://www.jkju.cc/index.php",
+    LOGIN_HEADERS = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0"
+        ),
+        "Origin": BASE_URL,
+        "Referer": LOGIN_PAGE + "?mod=logging&action=login",
+    }
+
+    SIGN_HEADERS = {
+        "User-Agent": LOGIN_HEADERS["User-Agent"],
+        "Referer": SIGN_PAGE_URL,
+    }
+
+    LOGIN_FORM_TEMPLATE = {
+        "referer": BASE_URL + "index.php",
         "questionid": 0,
         "answer": "",
     }
 
-    LOGIN_PARAMS = {
+    LOGIN_PARAMS_TEMPLATE = {
         "mod": "logging",
         "action": "login",
         "loginsubmit": "yes",
         "inajax": 1,
     }
 
-    LOGIN_HEADERS = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                      "AppleWebKit/537.36 (KHTML, like Gecko) "
-                      "Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0",
-        "Origin": "https://www.jkju.cc",
-        "Referer": "https://www.jkju.cc/member.php?mod=logging&action=login",
-    }
-
-    SIGN_HEADERS = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                      "AppleWebKit/537.36 (KHTML, like Gecko) "
-                      "Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0",
-        "Referer": "https://www.jkju.cc/plugin.php?id=zqlj_sign",
-    }
-
-    def __init__(self, username: str, password: str, is_email: bool = False) -> None:
+    def __init__(self, username: str, password: str, is_email: bool = False):
         self.session = requests.Session()
         self.username = username
+        self.password = password
         self.password_md5 = hashlib.md5(password.encode()).hexdigest()
+        self.login_field = "email" if is_email else "username"
 
-        self.login_form_data = self.LOGIN_FORM_DATA.copy()
-        self.login_form_data["username"] = username
-        self.login_form_data["password"] = password
-        self.login_form_data["loginfield"] = "email" if is_email else "username"
-
-        self.sign_url : str | None = None
-        self.sign_page_html: str | None = None
-        self.message = f"签到任务: 镜客居\n登录账号: {username}\n"
-
-    def _get_login_hash(self) -> tuple[str, str]:
-        resp = self.session.get(
-            self.LOGIN_PAGE, params={"mod": "logging", "action": "login"}
+        self.login_form_data = self.LOGIN_FORM_TEMPLATE.copy()
+        self.login_form_data.update(
+            {"username": username, "password": password, "loginfield": self.login_field}
         )
-        if resp.status_code == 403:
-            resp = self.session.get(
-                self.LOGIN_PAGE, params={"mod": "logging", "action": "login"}
-            )
-        soup = BeautifulSoup(resp.text, "html.parser")
 
+        self.sign_url: str | None = None
+        self.sign_page_html: str | None = None
+        self.messages: list[str] = [f"签到任务: 镜客居\n登录账号: {username}"]
+
+    # -------------------------
+    # HTTP 请求封装
+    # -------------------------
+    def _get(self, url: str, **kwargs) -> requests.Response:
+        resp = self.session.get(url, **kwargs)
+        if resp.status_code == 403:
+            self.session.cookies.clear_expired_cookies()
+            resp = self.session.get(url, **kwargs)
+        return resp
+
+    def _post(self, url: str, data=None, params=None, headers=None) -> requests.Response:
+        resp = self.session.post(url, data=data, params=params, headers=headers)
+        if resp.status_code == 403:
+            self.session.cookies.clear_expired_cookies()
+            resp = self.session.post(url, data=data, params=params, headers=headers)
+        return resp
+
+    # -------------------------
+    # 登录相关
+    # -------------------------
+    def _load_login_page(self) -> str:
+        for _ in range(3):
+            resp = self._get(self.LOGIN_PAGE, params={"mod": "logging", "action": "login"})
+            if "document.location.reload" not in resp.text:
+                return resp.text
+            sleep(1)
+        raise RuntimeError("登录页面加载失败或一直刷新")
+
+    def _parse_login_form(self, html: str) -> tuple[str, str]:
+        soup = BeautifulSoup(html, "html.parser")
         form_tag = soup.find("form", {"name": "login"})
         formhash = form_tag.find("input", {"name": "formhash", "type": "hidden"}).get("value")
         loginhash = form_tag.get("action").split("&")[-1].split("=")[-1]
-
         return formhash, loginhash
+
+    def _get_login_hash(self) -> tuple[str, str]:
+        html = self._load_login_page()
+        return self._parse_login_form(html)
 
     def login(self) -> int:
         formhash, loginhash = self._get_login_hash()
         self.login_form_data["formhash"] = formhash
-        self.LOGIN_PARAMS["loginhash"] = loginhash
+        login_params = self.LOGIN_PARAMS_TEMPLATE.copy()
+        login_params["loginhash"] = loginhash
 
-        resp = self.session.post(
-            self.LOGIN_URL,
-            params=self.LOGIN_PARAMS,
-            data=self.login_form_data,
-            headers=self.LOGIN_HEADERS,
-        )
-        if resp.status_code == 403:
-            self.session.cookies.clear_expired_cookies()
-
-            resp = self.session.post(
-                self.LOGIN_URL,
-                params=self.LOGIN_PARAMS,
-                data=self.login_form_data,
-                headers=self.LOGIN_HEADERS,
-            )
-
-        text = resp.text
-        if "请输入验证码继续登录" in text:
+        resp = self._post(self.LOGIN_URL, data=self.login_form_data, params=login_params, headers=self.LOGIN_HEADERS)
+        if "请输入验证码继续登录" in resp.text:
             return 0
-        if "欢迎您回来" in text:
+        if "欢迎您回来" in resp.text:
             return 1
         return -1
 
-    def _init_sign_page(self) -> None:
-        resp = self.session.get(self.SIGN_PAGE_URL)
-        if resp.status_code == 403:
-            self.session.cookies.clear_expired_cookies()
-            resp = self.session.get(self.SIGN_PAGE_URL)
+    # -------------------------
+    # 签到相关
+    # -------------------------
+    def _init_sign_page(self):
+        resp = self._get(self.SIGN_PAGE_URL)
         self.sign_page_html = resp.text
 
-    def _get_sign_trend(self) -> str:
-        soup = BeautifulSoup(self.sign_page_html, "lxml")
-        trend_lis = soup.select('#wp > div.ct2.cl > div.sd > div:nth-of-type(3) > div.bm_c > ul > li')
-        return "\n".join(li.text for li in trend_lis)
-
-    def _already_signed(self) -> bool:
+    def _parse_sign_button(self) -> tuple[str, bool]:
         soup = BeautifulSoup(self.sign_page_html, "html.parser")
         sign_btn = soup.find("div", class_="bm signbtn cl").find("a")
         self.sign_url = self.BASE_URL + sign_btn.get("href")
-        sign_status_text = sign_btn.text
-        return "今日已打卡" in sign_status_text
+        return self.sign_url, "今日已打卡" in sign_btn.text
+
+    def _get_sign_trend(self) -> str:
+        soup = BeautifulSoup(self.sign_page_html, "lxml")
+        trend_lis = soup.select(
+            '#wp > div.ct2.cl > div.sd > div:nth-of-type(3) > div.bm_c > ul > li'
+        )
+        return "\n".join(li.text for li in trend_lis)
 
     def sign(self) -> int:
-        resp = self.session.get(self.sign_url, headers=self.SIGN_HEADERS,)
-        if resp.status_code == 403:
-            self.session.cookies.clear_expired_cookies()
-            resp = self.session.get(self.sign_url, headers=self.SIGN_HEADERS,)
-
-        resp_text = resp.text
-
-        if "恭喜您，打卡成功！" in resp_text:
+        resp = self._get(self.sign_url, headers=self.SIGN_HEADERS)
+        if "恭喜您，打卡成功！" in resp.text:
             return 1
-        if "您今天已经打过卡了，请勿重复操作！" in resp_text:
+        if "您今天已经打过卡了，请勿重复操作！" in resp.text:
             return 0
         return -1
 
-    def start(self) -> None:
-        login_status = self.login()
-
-        if login_status == 0:
-            self.message += "登录状态: 频繁登录，需要验证码\n"
-        elif login_status == -1:
-            self.message += "登录状态: 登录失败\n"
-            print(self.message)
+    # -------------------------
+    # 执行入口
+    # -------------------------
+    def start(self):
+        status = self.login()
+        if status == 0:
+            self.messages.append("登录状态: 频繁登录，需要验证码")
+        elif status == -1:
+            self.messages.append("登录状态: 登录失败")
+            print("\n".join(self.messages))
             return
 
         self._init_sign_page()
-        if self._already_signed():
-            self.message += "执行结果: 今日已签到\n"
-            self.message += self._get_sign_trend()
+        _, already_signed = self._parse_sign_button()
+        if already_signed:
+            self.messages.append("执行结果: 今日已签到")
         else:
             sign_status = self.sign()
-            if sign_status == -1:
-                self.message += "执行结果: 签到失败\n"
-            else:
-                self.message += f"执行结果: {'签到成功' if sign_status == 1 else '今日已签到'}\n"
-                self._init_sign_page()
-                self.message += self._get_sign_trend()
-        print(self.message)
+            self.messages.append(f"执行结果: {'签到成功' if sign_status == 1 else '今日已签到'}")
+
+        self._init_sign_page()
+        self.messages.append(self._get_sign_trend())
+        print("\n".join(self.messages))
+
 
 if __name__ == "__main__":
-    args_parser = argparse.ArgumentParser()
-    args_parser.add_argument("-u","--user", type=str, required=True, help="用户")
-    args_parser.add_argument("-p","--password", type=str, required=True, help="密码")
-    args_parser.add_argument("-m","--mode", type=str, help="模式: username | email ")
-    arguments = args_parser.parse_args()
-    if arguments.mode is None or arguments.mode.strip().lower() != "email":
-        arguments.mode = "username"
-    signer = AutoSign(arguments.user, arguments.password, arguments.mode.strip().lower() == 'email')
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-u", "--user", required=True, help="用户名")
+    parser.add_argument("-p", "--password", required=True, help="密码")
+    parser.add_argument("-m", "--mode", help="模式: username | email")
+    args = parser.parse_args()
+
+    is_email = args.mode and args.mode.strip().lower() == "email"
+    signer = AutoSign(args.user, args.password, is_email)
     signer.start()
